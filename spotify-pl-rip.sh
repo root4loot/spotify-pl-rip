@@ -4,20 +4,18 @@ if [ $# -ne 4 ]; then
     exit 1
 fi
 
-# Command line arguments
 PLAYLIST_URL=$1
 CLIENT_ID=$2
 CLIENT_SECRET=$3
 OUTPUT_DIR=$4
 LOG_FILE="$OUTPUT_DIR/spotify-pl-rip_errors.log"
 
-# Configurable parameters
-TRACK_WAIT_TIME=120           # Time to wait between processing tracks (in seconds)
-SYNC_INTERVAL=14400           # Time between playlist syncs (in seconds, 14400 = 4 hours)
-MAX_CONVERSION_ATTEMPTS=3     # Maximum number of attempts for Spotify to Tidal conversion
-CONVERSION_RETRY_WAIT=30      # Time to wait between conversion retry attempts (in seconds)
-ARTIST_MATCH_LENGTH=3         # Number of characters to use for artist name matching
-TRACK_MATCH_LENGTH=5          # Number of characters to use for track name matching
+TRACK_WAIT_TIME=120
+SYNC_INTERVAL=14400
+MAX_CONVERSION_ATTEMPTS=3
+CONVERSION_RETRY_WAIT=30
+ARTIST_MATCH_LENGTH=3
+TRACK_MATCH_LENGTH=5
 
 if [ ! -d "$OUTPUT_DIR" ]; then
     echo "Error: Output directory does not exist: $OUTPUT_DIR"
@@ -34,15 +32,12 @@ file_exists() {
     local artist=$1
     local name=$2
     
-    # Extract first few characters of artist and name (after normalization)
     local normalized_artist=$(echo "$artist" | sed 's/[^a-zA-Z0-9]//g' | tr '[:upper:]' '[:lower:]')
     local normalized_name=$(echo "$name" | sed 's/[^a-zA-Z0-9]//g' | tr '[:upper:]' '[:lower:]')
     
-    # Take first few chars for more lenient matching
     local artist_start=${normalized_artist:0:$ARTIST_MATCH_LENGTH}
     local name_start=${normalized_name:0:$TRACK_MATCH_LENGTH}
     
-    # Skip if we don't have enough characters to match
     if [ -z "$artist_start" ] || [ -z "$name_start" ]; then
         echo "Warning: Artist or name too short for reliable matching: $artist - $name"
         return 1
@@ -53,7 +48,6 @@ file_exists() {
             local basename=$(basename "$file" .wav)
             local normalized_basename=$(echo "$basename" | sed 's/[^a-zA-Z0-9]//g' | tr '[:upper:]' '[:lower:]')
             
-            # Check if file contains the start of both artist and name
             if [[ "$normalized_basename" == *"$artist_start"* && "$normalized_basename" == *"$name_start"* ]]; then
                 echo "Match found: '$basename' contains artist '$artist_start' and name '$name_start'"
                 return 0
@@ -62,6 +56,38 @@ file_exists() {
     done
     
     return 1
+}
+
+cleanup_flac_files() {
+    echo "Looking for remaining FLAC files in $OUTPUT_DIR..."
+    
+    local flac_files=$(find "$OUTPUT_DIR" -name "*.flac" -type f)
+    
+    if [ -z "$flac_files" ]; then
+        echo "No FLAC files found."
+        return
+    fi
+    
+    echo "Found FLAC files to convert:"
+    echo "$flac_files"
+    
+    echo "$flac_files" | while read -r flac_path; do
+        if [ -f "$flac_path" ]; then
+            echo "Converting: $flac_path"
+            local wav_path="${flac_path%.flac}.wav"
+            
+            ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata comment="" -metadata ICMT="" "$wav_path" -y
+            
+            if [ -f "$wav_path" ]; then
+                echo "WAV conversion successful. Removing original FLAC file."
+                rm -f "$flac_path"
+            else
+                echo "WAV conversion failed. FLAC file not removed."
+            fi
+        fi
+    done
+    
+    echo "FLAC cleanup completed."
 }
 
 process_track() {
@@ -78,7 +104,6 @@ process_track() {
     
     echo "Converting Spotify URL to Tidal URL: $spotify_url"
     
-    # Try up to MAX_CONVERSION_ATTEMPTS times with a delay between attempts
     local attempt=1
     local tidal_response=""
     
@@ -87,12 +112,10 @@ process_track() {
         tidal_response=$(python /app/spotify-to-tidal/spotify-to-tidal.py "$spotify_url")
         echo "Tidal conversion response: $tidal_response"
         
-        # Check if conversion was successful
         if echo "$tidal_response" | grep -q "\"status\": \"success\""; then
             break
         fi
         
-        # Log the error
         local error_message=$(echo "$tidal_response" | grep -o "\"message\": \"[^\"]*\"" | cut -d'"' -f4)
         echo "Conversion attempt $attempt failed: $error_message"
         
@@ -104,14 +127,12 @@ process_track() {
         attempt=$((attempt + 1))
     done
     
-    # Check if conversion failed after all attempts
     if ! echo "$tidal_response" | grep -q "\"status\": \"success\""; then
         local error_message=$(echo "$tidal_response" | grep -o "\"message\": \"[^\"]*\"" | cut -d'"' -f4)
         log_error "Failed to convert to Tidal URL after $MAX_CONVERSION_ATTEMPTS attempts: $artist - $name ($spotify_url). Error: $error_message"
         return
     fi
     
-    # Extract Tidal URL
     local tidal_url=$(echo "$tidal_response" | grep -o "\"tidal_url\": \"[^\"]*\"" | cut -d'"' -f4)
     echo "Successfully converted to Tidal URL: $tidal_url"
     
@@ -120,13 +141,47 @@ process_track() {
     echo "Tidal download response: $download_response"
     
     if echo "$download_response" | grep -q "\"status\": \"success\""; then
-        local file_path=$(echo "$download_response" | grep -o "\"file_path\": \"[^\"]*\"" | cut -d'"' -f4)
+        local flac_path=""
         
-        echo "Converting to WAV: $file_path"
-        local wav_file="${file_path%.flac}.wav"
-        ffmpeg -i "$file_path" -c:a pcm_s16le -metadata comment="" -metadata ICMT="" "$wav_file" -y
+        if echo "$download_response" | grep -q "\"file_path\":"; then
+            flac_path=$(echo "$download_response" | grep -o "\"file_path\": \"[^\"]*\"" | cut -d'"' -f4)
+        elif echo "$download_response" | grep -q "\"path\":"; then
+            flac_path=$(echo "$download_response" | grep -o "\"path\": \"[^\"]*\"" | cut -d'"' -f4)
+        else
+            local download_artist=$(echo "$download_response" | grep -o "\"artist\": \"[^\"]*\"" | cut -d'"' -f4)
+            local download_title=$(echo "$download_response" | grep -o "\"title\": \"[^\"]*\"" | cut -d'"' -f4)
+            
+            if [ -n "$download_artist" ] && [ -n "$download_title" ]; then
+                flac_path="$OUTPUT_DIR/$download_artist - $download_title.flac"
+            fi
+        fi
         
-        rm "$file_path"
+        echo "Expected FLAC path: $flac_path"
+        
+        if [ -z "$flac_path" ] || [ ! -f "$flac_path" ]; then
+            echo "FLAC file not found at expected path. Searching for recently created FLAC files..."
+            local recent_flac=$(find "$OUTPUT_DIR" -name "*.flac" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -f2- -d" ")
+            
+            if [ -n "$recent_flac" ] && [ -f "$recent_flac" ]; then
+                echo "Found recent FLAC file: $recent_flac"
+                flac_path="$recent_flac"
+            else
+                log_error "Could not locate downloaded FLAC file for $artist - $name"
+                return
+            fi
+        fi
+        
+        echo "Converting to WAV: $flac_path"
+        local wav_path="${flac_path%.flac}.wav"
+        
+        ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata comment="" -metadata ICMT="" "$wav_path" -y
+        
+        if [ -f "$wav_path" ]; then
+            echo "WAV conversion successful. Removing original FLAC file."
+            rm -f "$flac_path"
+        else
+            echo "WAV conversion failed. FLAC file not removed."
+        fi
         
         echo "Successfully processed: $artist - $name"
     else
@@ -151,7 +206,6 @@ sync_tracks() {
             local name=$(echo "$track" | grep -o "\"name\": \"[^\"]*\"" | cut -d'"' -f4)
             local url=$(echo "$track" | grep -o "\"url\": \"[^\"]*\"" | cut -d'"' -f4)
             
-            # Skip tracks with empty artist or name
             if [ -z "$artist" ] || [ -z "$name" ] || [ -z "$url" ]; then
                 echo "Skipping invalid track data: $track"
                 continue
@@ -165,6 +219,7 @@ sync_tracks() {
     done
     
     echo "Sync completed"
+    cleanup_flac_files
 }
 
 while true; do
