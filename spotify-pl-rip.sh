@@ -143,21 +143,14 @@ process_track() {
     if echo "$download_response" | grep -q "\"status\": \"success\""; then
         local flac_path=""
         
+        # First try to find the actual file that was downloaded
         if echo "$download_response" | grep -q "\"file_path\":"; then
             flac_path=$(echo "$download_response" | grep -o "\"file_path\": \"[^\"]*\"" | cut -d'"' -f4)
         elif echo "$download_response" | grep -q "\"path\":"; then
             flac_path=$(echo "$download_response" | grep -o "\"path\": \"[^\"]*\"" | cut -d'"' -f4)
-        else
-            local download_artist=$(echo "$download_response" | grep -o "\"artist\": \"[^\"]*\"" | cut -d'"' -f4)
-            local download_title=$(echo "$download_response" | grep -o "\"title\": \"[^\"]*\"" | cut -d'"' -f4)
-            
-            if [ -n "$download_artist" ] && [ -n "$download_title" ]; then
-                flac_path="$OUTPUT_DIR/$download_artist - $download_title.flac"
-            fi
         fi
         
-        echo "Expected FLAC path: $flac_path"
-        
+        # If we have a path but the file doesn't exist, or no path was found
         if [ -z "$flac_path" ] || [ ! -f "$flac_path" ]; then
             echo "FLAC file not found at expected path. Searching for recently created FLAC files..."
             local recent_flac=$(find "$OUTPUT_DIR" -name "*.flac" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -f2- -d" ")
@@ -171,12 +164,16 @@ process_track() {
             fi
         fi
         
-        echo "Converting to WAV: $flac_path"
-        local wav_path="${flac_path%.flac}.wav"
+        # Define the target WAV file name using Spotify metadata
+        local target_wav="$OUTPUT_DIR/$artist - $name.wav"
         
-        ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata comment="" -metadata ICMT="" "$wav_path" -y
+        echo "Converting: $flac_path"
+        echo "To WAV with Spotify metadata: $target_wav"
         
-        if [ -f "$wav_path" ]; then
+        # Convert to WAV with Spotify metadata
+        ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata title="$name" -metadata artist="$artist" -metadata comment="" -metadata ICMT="" "$target_wav" -y
+        
+        if [ -f "$target_wav" ]; then
             echo "WAV conversion successful. Removing original FLAC file."
             rm -f "$flac_path"
         else
