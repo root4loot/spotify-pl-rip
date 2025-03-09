@@ -2,6 +2,7 @@ version: '3'
 
 services:
   spotify-pl-rip:
+    container_name: spotify-pl-rip
     build: .
     volumes:
       - ${OUTPUT_DIR}:/output
