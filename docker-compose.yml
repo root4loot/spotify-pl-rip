@@ -1,0 +1,19 @@
+version: '3'
+
+services:
+  spotify-pl-rip:
+    build: .
+    volumes:
+      - ${OUTPUT_DIR}:/output
+    env_file:
+      - .env
+    environment:
+      - SPOTIFY_PLAYLIST_URL=${SPOTIFY_PLAYLIST_URL}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+    command:
+      - "${SPOTIFY_PLAYLIST_URL}"
+      - "${SPOTIFY_CLIENT_ID}"
+      - "${SPOTIFY_CLIENT_SECRET}"
+      - "/output"
+    restart: unless-stopped
