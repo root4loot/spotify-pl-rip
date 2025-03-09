@@ -28,6 +28,13 @@ log_error() {
     echo "[$timestamp] $1"
 }
 
+# Function to decode Unicode escape sequences
+decode_unicode() {
+    local input="$1"
+    # Use Python to decode Unicode escape sequences
+    python3 -c "import sys; print(sys.argv[1].encode('utf-8').decode('unicode_escape'))" "$input"
+}
+
 file_exists() {
     local artist=$1
     local name=$2
@@ -95,10 +102,14 @@ process_track() {
     local artist=$2
     local name=$3
     
-    echo "Processing: $artist - $name"
+    # Decode Unicode escape sequences
+    local decoded_artist=$(decode_unicode "$artist")
+    local decoded_name=$(decode_unicode "$name")
     
-    if file_exists "$artist" "$name"; then
-        echo "File already exists in output directory, skipping: $artist - $name"
+    echo "Processing: $decoded_artist - $decoded_name"
+    
+    if file_exists "$decoded_artist" "$decoded_name"; then
+        echo "File already exists in output directory, skipping: $decoded_artist - $decoded_name"
         return
     fi
     
@@ -129,7 +140,7 @@ process_track() {
     
     if ! echo "$tidal_response" | grep -q "\"status\": \"success\""; then
         local error_message=$(echo "$tidal_response" | grep -o "\"message\": \"[^\"]*\"" | cut -d'"' -f4)
-        log_error "Failed to convert to Tidal URL after $MAX_CONVERSION_ATTEMPTS attempts: $artist - $name ($spotify_url). Error: $error_message"
+        log_error "Failed to convert to Tidal URL after $MAX_CONVERSION_ATTEMPTS attempts: $decoded_artist - $decoded_name ($spotify_url). Error: $error_message"
         return
     fi
     
@@ -143,14 +154,17 @@ process_track() {
     if echo "$download_response" | grep -q "\"status\": \"success\""; then
         local flac_path=""
         
-        # First try to find the actual file that was downloaded
         if echo "$download_response" | grep -q "\"file_path\":"; then
             flac_path=$(echo "$download_response" | grep -o "\"file_path\": \"[^\"]*\"" | cut -d'"' -f4)
         elif echo "$download_response" | grep -q "\"path\":"; then
             flac_path=$(echo "$download_response" | grep -o "\"path\": \"[^\"]*\"" | cut -d'"' -f4)
+        else
+            # Use the Spotify artist and name instead of Tidal's
+            flac_path="$OUTPUT_DIR/$decoded_artist - $decoded_name.flac"
         fi
         
-        # If we have a path but the file doesn't exist, or no path was found
+        echo "Expected FLAC path: $flac_path"
+        
         if [ -z "$flac_path" ] || [ ! -f "$flac_path" ]; then
             echo "FLAC file not found at expected path. Searching for recently created FLAC files..."
             local recent_flac=$(find "$OUTPUT_DIR" -name "*.flac" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -f2- -d" ")
@@ -159,31 +173,31 @@ process_track() {
                 echo "Found recent FLAC file: $recent_flac"
                 flac_path="$recent_flac"
             else
-                log_error "Could not locate downloaded FLAC file for $artist - $name"
+                log_error "Could not locate downloaded FLAC file for $decoded_artist - $decoded_name"
                 return
             fi
         fi
         
-        # Define the target WAV file name using Spotify metadata
-        local target_wav="$OUTPUT_DIR/$artist - $name.wav"
-        
         echo "Converting: $flac_path"
-        echo "To WAV with Spotify metadata: $target_wav"
         
-        # Convert to WAV with Spotify metadata
-        ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata title="$name" -metadata artist="$artist" -metadata comment="" -metadata ICMT="" "$target_wav" -y
+        # Create WAV path with properly decoded artist and name
+        local wav_path="$OUTPUT_DIR/$decoded_artist - $decoded_name.wav"
         
-        if [ -f "$target_wav" ]; then
+        echo "To WAV with Spotify metadata: $wav_path"
+        
+        ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata comment="" -metadata ICMT="" "$wav_path" -y
+        
+        if [ -f "$wav_path" ]; then
             echo "WAV conversion successful. Removing original FLAC file."
             rm -f "$flac_path"
         else
             echo "WAV conversion failed. FLAC file not removed."
         fi
         
-        echo "Successfully processed: $artist - $name"
+        echo "Successfully processed: $decoded_artist - $decoded_name"
     else
         local download_error=$(echo "$download_response" | grep -o "\"message\": \"[^\"]*\"" | cut -d'"' -f4)
-        log_error "Failed to download track: $artist - $name ($tidal_url). Error: $download_error"
+        log_error "Failed to download track: $decoded_artist - $decoded_name ($tidal_url). Error: $download_error"
     fi
 }
 
