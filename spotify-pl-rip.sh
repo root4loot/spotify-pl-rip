@@ -9,6 +9,7 @@ CLIENT_ID=$2
 CLIENT_SECRET=$3
 OUTPUT_DIR=$4
 LOG_FILE="$OUTPUT_DIR/spotify-pl-rip_errors.log"
+CACHED_TRACKS_FILE="$OUTPUT_DIR/cached_tracks.json"
 
 TRACK_WAIT_TIME=120
 SYNC_INTERVAL=14400
@@ -28,10 +29,8 @@ log_error() {
     echo "[$timestamp] $1"
 }
 
-# Function to decode Unicode escape sequences
 decode_unicode() {
     local input="$1"
-    # Use Python to decode Unicode escape sequences
     python3 -c "import sys; print(sys.argv[1].encode('utf-8').decode('unicode_escape'))" "$input"
 }
 
@@ -102,7 +101,6 @@ process_track() {
     local artist=$2
     local name=$3
     
-    # Decode Unicode escape sequences
     local decoded_artist=$(decode_unicode "$artist")
     local decoded_name=$(decode_unicode "$name")
     
@@ -159,14 +157,7 @@ process_track() {
         elif echo "$download_response" | grep -q "\"path\":"; then
             flac_path=$(echo "$download_response" | grep -o "\"path\": \"[^\"]*\"" | cut -d'"' -f4)
         else
-            # Use the Spotify artist and name instead of Tidal's
-            flac_path="$OUTPUT_DIR/$decoded_artist - $decoded_name.flac"
-        fi
-        
-        echo "Expected FLAC path: $flac_path"
-        
-        if [ -z "$flac_path" ] || [ ! -f "$flac_path" ]; then
-            echo "FLAC file not found at expected path. Searching for recently created FLAC files..."
+            echo "No file path provided in response, searching for recently created FLAC files..."
             local recent_flac=$(find "$OUTPUT_DIR" -name "*.flac" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -f2- -d" ")
             
             if [ -n "$recent_flac" ] && [ -f "$recent_flac" ]; then
@@ -178,23 +169,23 @@ process_track() {
             fi
         fi
         
-        echo "Converting: $flac_path"
-        
-        # Create WAV path with properly decoded artist and name
-        local wav_path="$OUTPUT_DIR/$decoded_artist - $decoded_name.wav"
-        
-        echo "To WAV with Spotify metadata: $wav_path"
-        
-        ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata comment="" -metadata ICMT="" "$wav_path" -y
-        
-        if [ -f "$wav_path" ]; then
-            echo "WAV conversion successful. Removing original FLAC file."
-            rm -f "$flac_path"
+        if [ -f "$flac_path" ]; then
+            local wav_path="$OUTPUT_DIR/$decoded_artist - $decoded_name.wav"
+            echo "Converting to WAV using Spotify metadata: $wav_path"
+            
+            ffmpeg -i "$flac_path" -c:a pcm_s16le -metadata artist="$decoded_artist" -metadata title="$decoded_name" -metadata comment="" -metadata ICMT="" "$wav_path" -y
+            
+            if [ -f "$wav_path" ]; then
+                echo "WAV conversion successful. Removing original FLAC file."
+                rm -f "$flac_path"
+                echo "Successfully processed: $decoded_artist - $decoded_name"
+            else
+                echo "WAV conversion failed. FLAC file not removed."
+                log_error "Failed to convert FLAC to WAV: $flac_path"
+            fi
         else
-            echo "WAV conversion failed. FLAC file not removed."
+            log_error "FLAC file not found: $flac_path"
         fi
-        
-        echo "Successfully processed: $decoded_artist - $decoded_name"
     else
         local download_error=$(echo "$download_response" | grep -o "\"message\": \"[^\"]*\"" | cut -d'"' -f4)
         log_error "Failed to download track: $decoded_artist - $decoded_name ($tidal_url). Error: $download_error"
@@ -207,27 +198,47 @@ get_spotify_tracks() {
     echo "$result"
 }
 
-sync_tracks() {
-    echo "Syncing tracks from Spotify playlist: $PLAYLIST_URL"
-    local tracks=$(get_spotify_tracks)
+find_new_tracks() {
+    local current_tracks=$(get_spotify_tracks)
+    local new_tracks=()
     
-    echo "$tracks" | while read -r track; do
+    if [ ! -f "$CACHED_TRACKS_FILE" ]; then
+        echo "[]" > "$CACHED_TRACKS_FILE"
+    fi
+    
+    echo "Identifying new tracks in playlist..."
+    
+    echo "$current_tracks" | while read -r track; do
         if [ -n "$track" ]; then
             local artist=$(echo "$track" | grep -o "\"artist\": \"[^\"]*\"" | cut -d'"' -f4)
             local name=$(echo "$track" | grep -o "\"name\": \"[^\"]*\"" | cut -d'"' -f4)
             local url=$(echo "$track" | grep -o "\"url\": \"[^\"]*\"" | cut -d'"' -f4)
+            local decoded_artist=$(decode_unicode "$artist")
+            local decoded_name=$(decode_unicode "$name")
             
             if [ -z "$artist" ] || [ -z "$name" ] || [ -z "$url" ]; then
                 echo "Skipping invalid track data: $track"
                 continue
             fi
             
-            process_track "$url" "$artist" "$name"
-            
-            echo "Waiting $TRACK_WAIT_TIME seconds before processing next track..."
-            sleep $TRACK_WAIT_TIME
+            if ! file_exists "$decoded_artist" "$decoded_name"; then
+                echo "New track found: $decoded_artist - $decoded_name"
+                process_track "$url" "$artist" "$name"
+                echo "Waiting $TRACK_WAIT_TIME seconds before processing next track..."
+                sleep $TRACK_WAIT_TIME
+            else
+                echo "Track already exists: $decoded_artist - $decoded_name"
+            fi
         fi
     done
+    
+    echo "$current_tracks" > "$CACHED_TRACKS_FILE"
+}
+
+sync_tracks() {
+    echo "Starting sync for Spotify playlist: $PLAYLIST_URL"
+    
+    find_new_tracks
     
     echo "Sync completed"
     cleanup_flac_files
