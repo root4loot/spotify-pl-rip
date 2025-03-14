@@ -9,7 +9,6 @@ CLIENT_ID=$2
 CLIENT_SECRET=$3
 OUTPUT_DIR=$4
 LOG_FILE="$OUTPUT_DIR/spotify-pl-rip_errors.log"
-CACHED_TRACKS_FILE="$OUTPUT_DIR/cached_tracks.json"
 
 TRACK_WAIT_TIME=120
 SYNC_INTERVAL=14400
@@ -200,11 +199,6 @@ get_spotify_tracks() {
 
 find_new_tracks() {
     local current_tracks=$(get_spotify_tracks)
-    local new_tracks=()
-    
-    if [ ! -f "$CACHED_TRACKS_FILE" ]; then
-        echo "[]" > "$CACHED_TRACKS_FILE"
-    fi
     
     echo "Identifying new tracks in playlist..."
     
@@ -231,8 +225,6 @@ find_new_tracks() {
             fi
         fi
     done
-    
-    echo "$current_tracks" > "$CACHED_TRACKS_FILE"
 }
 
 sync_tracks() {
